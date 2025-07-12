@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.Design;
 using System.Diagnostics;
@@ -15,11 +16,13 @@ using System.Security;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Input;
+using ManagedCommon;
 using Microsoft.CmdPal.Ext.Apps.Commands;
 using Microsoft.CmdPal.Ext.Apps.Properties;
 using Microsoft.CmdPal.Ext.Apps.Utils;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 using Microsoft.Win32;
+using Windows.System;
 
 namespace Microsoft.CmdPal.Ext.Apps.Programs;
 
@@ -190,17 +193,35 @@ public class Win32Program : IProgram
         if (AppType != ApplicationType.InternetShortcutApplication && AppType != ApplicationType.Folder && AppType != ApplicationType.GenericFile)
         {
             commands.Add(new CommandContextItem(
-                    new RunAsAdminCommand(!string.IsNullOrEmpty(LnkFilePath) ? LnkFilePath : FullPath, ParentDirectory, false)));
+                    new RunAsAdminCommand(!string.IsNullOrEmpty(LnkFilePath) ? LnkFilePath : FullPath, ParentDirectory, false))
+            {
+                RequestedShortcut = KeyChordHelpers.FromModifiers(ctrl: true, shift: true, vkey: VirtualKey.Enter),
+            });
 
             commands.Add(new CommandContextItem(
-                    new RunAsUserCommand(!string.IsNullOrEmpty(LnkFilePath) ? LnkFilePath : FullPath, ParentDirectory)));
+                    new RunAsUserCommand(!string.IsNullOrEmpty(LnkFilePath) ? LnkFilePath : FullPath, ParentDirectory))
+            {
+                RequestedShortcut = KeyChordHelpers.FromModifiers(ctrl: true, shift: true, vkey: VirtualKey.U),
+            });
         }
 
         commands.Add(new CommandContextItem(
-                    new OpenPathCommand(ParentDirectory)));
+                    new CopyPathCommand(FullPath))
+        {
+            RequestedShortcut = KeyChordHelpers.FromModifiers(ctrl: true, shift: true, vkey: VirtualKey.C),
+        });
 
         commands.Add(new CommandContextItem(
-                    new OpenInConsoleCommand(ParentDirectory)));
+                    new OpenPathCommand(ParentDirectory))
+        {
+            RequestedShortcut = KeyChordHelpers.FromModifiers(ctrl: true, shift: true, vkey: VirtualKey.E),
+        });
+
+        commands.Add(new CommandContextItem(
+                    new OpenInConsoleCommand(ParentDirectory))
+        {
+            RequestedShortcut = KeyChordHelpers.FromModifiers(ctrl: true, shift: true, vkey: VirtualKey.R),
+        });
 
         return commands;
     }
@@ -239,10 +260,12 @@ public class Win32Program : IProgram
         }
         catch (Exception e) when (e is SecurityException || e is UnauthorizedAccessException)
         {
+            Logger.LogError(e.Message);
             return InvalidProgram;
         }
-        catch (Exception)
+        catch (Exception e)
         {
+            Logger.LogError(e.Message);
             return InvalidProgram;
         }
     }
@@ -317,11 +340,13 @@ public class Win32Program : IProgram
             }
             catch (Exception e) when (e is SecurityException || e is UnauthorizedAccessException)
             {
+                Logger.LogError(e.Message);
                 return InvalidProgram;
             }
         }
-        catch (Exception)
+        catch (Exception e)
         {
+            Logger.LogError(e.Message);
             return InvalidProgram;
         }
     }
@@ -374,15 +399,17 @@ public class Win32Program : IProgram
 
             return program;
         }
-        catch (System.IO.FileLoadException)
+        catch (System.IO.FileLoadException e)
         {
+            Logger.LogError(e.Message);
             return InvalidProgram;
         }
 
         // Only do a catch all in production. This is so make developer aware of any unhandled exception and add the exception handling in.
         // Error caused likely due to trying to get the description of the program
-        catch (Exception)
+        catch (Exception e)
         {
+            Logger.LogError(e.Message);
             return InvalidProgram;
         }
     }
@@ -402,14 +429,17 @@ public class Win32Program : IProgram
         }
         catch (Exception e) when (e is SecurityException || e is UnauthorizedAccessException)
         {
+            Logger.LogError(e.Message);
             return InvalidProgram;
         }
-        catch (FileNotFoundException)
+        catch (FileNotFoundException e)
         {
+            Logger.LogError(e.Message);
             return InvalidProgram;
         }
-        catch (Exception)
+        catch (Exception e)
         {
+            Logger.LogError(e.Message);
             return InvalidProgram;
         }
     }
@@ -515,16 +545,19 @@ public class Win32Program : IProgram
                     {
                         files.AddRange(Directory.EnumerateFiles(currentDirectory, $"*.{suffix}", SearchOption.TopDirectoryOnly));
                     }
-                    catch (DirectoryNotFoundException)
+                    catch (DirectoryNotFoundException e)
                     {
+                        Logger.LogError(e.Message);
                     }
                 }
             }
             catch (Exception e) when (e is SecurityException || e is UnauthorizedAccessException)
             {
+                Logger.LogError(e.Message);
             }
-            catch (Exception)
+            catch (Exception e)
             {
+                Logger.LogError(e.Message);
             }
 
             try
@@ -548,9 +581,11 @@ public class Win32Program : IProgram
             }
             catch (Exception e) when (e is SecurityException || e is UnauthorizedAccessException)
             {
+                Logger.LogError(e.Message);
             }
-            catch (Exception)
+            catch (Exception e)
             {
+                Logger.LogError(e.Message);
             }
         }
         while (folderQueue.Count > 0);
@@ -682,6 +717,7 @@ public class Win32Program : IProgram
         }
         catch (Exception e) when (e is SecurityException || e is UnauthorizedAccessException)
         {
+            Logger.LogError(e.Message);
             return string.Empty;
         }
     }
@@ -769,8 +805,9 @@ public class Win32Program : IProgram
             icoPath = ExpandEnvironmentVariables(redirectionPath);
             return true;
         }
-        catch (IOException)
+        catch (IOException e)
         {
+            Logger.LogError(e.Message);
         }
 
         icoPath = null;
@@ -806,7 +843,7 @@ public class Win32Program : IProgram
             var paths = new HashSet<string>(defaultHashsetSize);
             var runCommandPaths = new HashSet<string>(defaultHashsetSize);
 
-            // Parallelize multiple sources, and priority based on paths which most likely contain .lnks which are formatted
+            // Parallelize multiple sources, and priority based on paths which most likely contain .lnk files which are formatted
             var sources = new (bool IsEnabled, Func<IEnumerable<string>> GetPaths)[]
             {
                 (true, () => CustomProgramPaths(settings.ProgramSources, settings.ProgramSuffixes)),
@@ -824,23 +861,75 @@ public class Win32Program : IProgram
             var disabledProgramsList = settings.DisabledProgramSources;
 
             // Get all paths but exclude all normal .Executables
-            paths.UnionWith(sources
-                .AsParallel()
-                .SelectMany(source => source.IsEnabled ? source.GetPaths() : Enumerable.Empty<string>())
-                .Where(programPath => disabledProgramsList.All(x => x.UniqueIdentifier != programPath))
-                .Where(path => !ExecutableApplicationExtensions.Contains(Extension(path))));
-            runCommandPaths.UnionWith(runCommandSources
-                .AsParallel()
-                .SelectMany(source => source.IsEnabled ? source.GetPaths() : Enumerable.Empty<string>())
-                .Where(programPath => disabledProgramsList.All(x => x.UniqueIdentifier != programPath)));
+            var pathBag = new ConcurrentBag<string>();
 
-            var programs = paths.AsParallel().Select(source => GetProgramFromPath(source));
-            var runCommandPrograms = runCommandPaths.AsParallel().Select(source => GetRunCommandProgramFromPath(source));
+            Parallel.ForEach(sources, source =>
+            {
+                if (!source.IsEnabled)
+                {
+                    return;
+                }
+
+                foreach (var path in source.GetPaths())
+                {
+                    if (disabledProgramsList.All(x => x.UniqueIdentifier != path) &&
+                        !ExecutableApplicationExtensions.Contains(Extension(path)))
+                    {
+                        pathBag.Add(path);
+                    }
+                }
+            });
+
+            paths.UnionWith(pathBag);
+
+            var runCommandPathBag = new ConcurrentBag<string>();
+
+            Parallel.ForEach(runCommandSources, source =>
+            {
+                if (!source.IsEnabled)
+                {
+                    return;
+                }
+
+                foreach (var path in source.GetPaths())
+                {
+                    if (disabledProgramsList.All(x => x.UniqueIdentifier != path))
+                    {
+                        runCommandPathBag.Add(path);
+                    }
+                }
+            });
+
+            runCommandPaths.UnionWith(runCommandPathBag);
+
+            var programsList = new ConcurrentBag<Win32Program>();
+            Parallel.ForEach(paths, source =>
+            {
+                var program = GetProgramFromPath(source);
+                if (program != null)
+                {
+                    programsList.Add(program);
+                }
+            });
+
+            var runCommandProgramsList = new ConcurrentBag<Win32Program>();
+            Parallel.ForEach(runCommandPaths, source =>
+            {
+                var program = GetRunCommandProgramFromPath(source);
+                if (program != null)
+                {
+                    runCommandProgramsList.Add(program);
+                }
+            });
+
+            var programs = programsList.ToList();
+            var runCommandPrograms = runCommandProgramsList.ToList();
 
             return DeduplicatePrograms(programs.Concat(runCommandPrograms).Where(program => program?.Valid == true));
         }
-        catch (Exception)
+        catch (Exception e)
         {
+            Logger.LogError(e.Message);
             return Array.Empty<Win32Program>();
         }
     }
